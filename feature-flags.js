@@ -1,9 +1,16 @@
-const axios = require('axios')
+const debug = require('debug')('posthog-node')
 const crypto = require('crypto')
 const ms = require('ms')
 const version = require('./package.json').version
+const { Headers } = require('undici')
 
 const LONG_SCALE = 0xfffffffffffffff
+
+/**
+ * @private
+ * Decorate the default fetch with timeout and retry functionality
+ */
+const decoratedFetch = require('./decoratedFetch')
 
 class ClientError extends Error {
     constructor(message, extra) {
@@ -34,6 +41,7 @@ class FeatureFlagsPoller {
 
     async isFeatureEnabled(key, distinctId, defaultResult = false, groups = {}) {
         await this.loadFeatureFlags()
+        // console.log(`loadedSuccessfullyOnce:`, this.loadedSuccessfullyOnce)
 
         if (!this.loadedSuccessfullyOnce) {
             return defaultResult
@@ -47,7 +55,6 @@ class FeatureFlagsPoller {
                 break
             }
         }
-
         if (!featureFlag) {
             return defaultResult
         }
@@ -58,11 +65,40 @@ class FeatureFlagsPoller {
             isFlagEnabledResponse = this._isSimpleFlagEnabled({
                 key,
                 distinctId,
-                rolloutPercentage: featureFlag.rolloutPercentage,
+                rolloutPercentage: featureFlag.rollout_percentage,
             })
         } else {
-            const res = await this._request({ path: 'decide', method: 'POST', data: { groups, distinct_id: distinctId } })
-            isFlagEnabledResponse = res.data.featureFlags.indexOf(key) >= 0
+            // console.log(`isFeatureEnabled() featureFlag:`, featureFlag)
+
+            try {
+                const requestBody = { groups, distinct_id: distinctId }
+                // console.log(`isFeatureEnabled() requestBody:`, requestBody)
+
+                const stringifiedRequestBody = JSON.stringify(requestBody)
+
+                const res = await this._request({
+                    path: 'decide',
+                    method: 'POST',
+                    body: requestBody,
+                })
+                // console.log(`isFeatureEnabled() response:`, res)
+                // console.log(`isFeatureEnabled() isResponseOK:`, res.ok, res.status)
+
+                if (res.ok) {
+                    const json = await res.json()
+                    // console.log(`isFeatureEnabled() json:`, json)
+
+                    isFlagEnabledResponse = json.featureFlags.indexOf(key) >= 0
+                } else {
+                    // console.log(`isFeatureEnabled() failed response`)
+
+                    isFlagEnabledResponse = defaultResult
+                }
+            } catch (err) {
+                // console.log(`isFeatureEnabled() err:`, err)
+
+                isFlagEnabledResponse = defaultResult
+            }
         }
 
         this.featureFlagCalledCallback(key, distinctId, isFlagEnabledResponse)
@@ -79,22 +115,33 @@ class FeatureFlagsPoller {
     async _loadFeatureFlags() {
         if (this.poller) {
             clearTimeout(this.poller)
+            this.poller.unref()
             this.poller = null
         }
-        this.poller = setTimeout(() => this._loadFeatureFlags(), this.pollingInterval)
+
+        this.poller = setTimeout(() => this._loadFeatureFlags(), this.pollingInterval).unref()
 
         try {
-            const res = await this._request({ path: 'api/feature_flag', usePersonalApiKey: true })
-            if (res && res.status === 401) {
+            const requestResponse = await this._request({ path: 'api/feature_flag', usePersonalApiKey: true })
+            if (requestResponse && requestResponse.status === 401) {
                 throw new ClientError(
                     `Your personalApiKey is invalid. Are you sure you're not using your Project API key? More information: https://posthog.com/docs/api/overview`
                 )
             }
 
-            this.featureFlags = res.data.results.filter(flag => flag.active)
+            const json = await requestResponse.json()
 
-            this.loadedSuccessfullyOnce = true
+            if (requestResponse.ok) {
+                this.featureFlags = json.results.concat().filter((flag) => flag.active)
+
+                this.loadedSuccessfullyOnce = true
+            } else {
+                debug(requestResponse.status, requestResponse.statusText, json)
+                throw new Error('Failed to fetch feature flags')
+            }
         } catch (err) {
+            // console.log(`Error occurred:`, err)
+
             // if an error that is not an instance of ClientError is thrown
             // we silently ignore the error when reloading feature flags
             if (err instanceof ClientError) {
@@ -107,47 +154,62 @@ class FeatureFlagsPoller {
     // integerRepresentationOfHashSubset / LONG_SCALE for sha1('a.b') should equal 0.4139158829615955
     _isSimpleFlagEnabled({ key, distinctId, rolloutPercentage }) {
         if (!rolloutPercentage) {
+            // console.info(`FeatureFlagPoller._isSimpleFlagEnabled() Missing rolloutPercentage`)
             return true
         }
+
         const sha1Hash = crypto.createHash('sha1')
         sha1Hash.update(`${key}.${distinctId}`)
         const integerRepresentationOfHashSubset = parseInt(sha1Hash.digest('hex').slice(0, 15), 16)
+
         return integerRepresentationOfHashSubset / LONG_SCALE <= rolloutPercentage / 100
     }
 
     /* istanbul ignore next */
-    async _request({ path, method = 'GET', usePersonalApiKey = false, data = {} }) {
+    async _request({ path, method = 'GET', usePersonalApiKey = false, headers = {}, body = {} }) {
         let url = `${this.host}/${path}/`
-        let headers = {
-            'Content-Type': 'application/json',
-        }
 
         if (usePersonalApiKey) {
             headers = { ...headers, Authorization: `Bearer ${this.personalApiKey}` }
             url = url + `?token=${this.projectApiKey}`
         } else {
-            data = { ...data, token: this.projectApiKey }
+            body = { ...body, token: this.projectApiKey }
         }
 
         if (typeof window === 'undefined') {
             headers['user-agent'] = `posthog-node/${version}`
         }
 
+        const requestBody = ['GET', 'HEAD'].includes(method) ? undefined : JSON.stringify(body)
+
+        const requestHeaders = new Headers(headers)
+        requestHeaders.set('Content-Type', 'application/json')
+        requestHeaders.set('Content-Length', Buffer.byteLength(requestBody ?? ''))
+
         const req = {
             method: method,
-            url: url,
-            headers: headers,
-            data: JSON.stringify(data),
+            headers: requestHeaders,
+            body: requestBody,
         }
-
-        if (this.timeout) {
-            req.timeout = typeof this.timeout === 'string' ? ms(this.timeout) : this.timeout
-        }
-
 
         let res
         try {
-            res = await axios.request(req)
+            // console.log(`decoratedFetch:`, decoratedFetch)
+            res = await decoratedFetch(url, {
+                ...req,
+                retry: {
+                    retries: this.retryCount,
+                    factor: 2,
+                    randomize: true,
+                    onRetry: this._isErrorRetryable,
+                },
+                timeout: typeof this.timeout === 'string' ? ms(this.timeout) : this.timeout,
+            })
+            // console.log(`response:`, res)
+
+            if (!res.ok) {
+                throw new Error('Failed to fetch request')
+            }
         } catch (err) {
             throw new Error(`Request to ${path} failed with error: ${err.message}`)
         }
@@ -157,6 +219,8 @@ class FeatureFlagsPoller {
 
     stopPoller() {
         clearTimeout(this.poller)
+        this.poller.unref()
+        this.poller = null
     }
 }
 

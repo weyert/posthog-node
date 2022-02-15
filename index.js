@@ -1,9 +1,9 @@
 'use strict'
 
 const assert = require('assert')
+const { isNetworkError } = require('./fetchRetry')
 const removeSlash = require('remove-trailing-slash')
-const axios = require('axios')
-const axiosRetry = require('axios-retry')
+const debug = require('debug')('posthog-node')
 const ms = require('ms')
 const version = require('./package.json').version
 const looselyValidate = require('./event-validation')
@@ -12,7 +12,17 @@ const { FeatureFlagsPoller } = require('./feature-flags')
 const setImmediate = global.setImmediate || process.nextTick.bind(process)
 const noop = () => {}
 
+/**
+ * @private
+ * Decorate the default fetch with timeout and retry functionality
+ */
+const decoratedFetch = require('./decoratedFetch')
+
+/**
+ * @private
+ */
 const FIVE_MINUTES = 5 * 60 * 1000
+
 class PostHog {
     /**
      * Initialize a new `PostHog` with your PostHog project's `apiKey` and an
@@ -41,18 +51,14 @@ class PostHog {
         this.flushInterval = typeof options.flushInterval === 'number' ? options.flushInterval : 10000
         this.flushed = false
         this.personalApiKey = options.personalApiKey
+        this.retryCount = options.retryCount
+
 
         Object.defineProperty(this, 'enable', {
             configurable: false,
             writable: false,
             enumerable: true,
             value: typeof options.enable === 'boolean' ? options.enable : true,
-        })
-
-        axiosRetry(axios, {
-            retries: options.retryCount || 3,
-            retryCondition: this._isErrorRetryable,
-            retryDelay: axiosRetry.exponentialDelay,
         })
 
         if (this.personalApiKey) {
@@ -75,6 +81,7 @@ class PostHog {
                 personalApiKey: options.personalApiKey,
                 projectApiKey: apiKey,
                 timeout: options.timeout || false,
+                retryCount: options.retryCount || 3,
                 host: this.host,
                 featureFlagCalledCallback,
             })
@@ -86,10 +93,7 @@ class PostHog {
             looselyValidate(message, type)
         } catch (e) {
             if (e.message === 'Your message must be < 32 kB.') {
-                console.log(
-                    'Your message must be < 32 kB.',
-                    JSON.stringify(message)
-                )
+                // //debug('Your message must be < 32 kB.', JSON.stringify(message))
                 return
             }
             throw e
@@ -192,8 +196,8 @@ class PostHog {
             properties: {
                 $group_type: message.groupType,
                 $group_key: message.groupKey,
-                $group_set: message.properties || {}
-            }
+                $group_set: message.properties || {},
+            },
         }
 
         return this.capture(captureMessage, callback)
@@ -240,13 +244,27 @@ class PostHog {
 
         if (this.queue.length >= this.flushAt) {
             this.flush()
+            return
         }
 
         if (this.flushInterval && !this.timer) {
-            this.timer = setTimeout(() => this.flush(), this.flushInterval)
+            this.timer = setTimeout(
+                () => {
+                    this.flush()
+                },
+                this.flushInterval
+            )
         }
     }
 
+    /**
+     *
+     * @param {*} key
+     * @param {*} distinctId
+     * @param {*} defaultResult
+     * @param {*} groups
+     * @returns
+     */
     async isFeatureEnabled(key, distinctId, defaultResult = false, groups = {}) {
         this._validate({ key, distinctId, defaultResult, groups }, 'isFeatureEnabled')
         assert(this.personalApiKey, 'You have to specify the option personalApiKey to use feature flags.')
@@ -269,16 +287,19 @@ class PostHog {
         callback = callback || noop
 
         if (!this.enable) {
-            return setImmediate(callback)
+            setImmediate(callback)
+            return this
         }
 
         if (this.timer) {
             clearTimeout(this.timer)
+            this.timer.unref()
             this.timer = null
         }
 
         if (!this.queue.length) {
-            return setImmediate(callback)
+            setImmediate(callback)
+            return this
         }
 
         const items = this.queue.splice(0, this.flushAt)
@@ -304,27 +325,48 @@ class PostHog {
             headers['user-agent'] = `posthog-node/${version}`
         }
 
-        const req = {
+        const requestUrl = `${this.host}/batch/`
+
+        const requestOptions = {
             method: 'POST',
-            url: `${this.host}/batch/`,
-            data,
+            body: JSON.stringify(data),
             headers,
         }
 
-        if (this.timeout) {
-            req.timeout = typeof this.timeout === 'string' ? ms(this.timeout) : this.timeout
-        }
+        decoratedFetch(requestUrl, {
+            ...requestOptions,
+            retry: {
+                retries: this.retryCount,
+                factor: 2,
+                randomize: true,
+                onRetry: this._isErrorRetryable,
+            },
+            timeout: typeof this.timeout === 'string' ? ms(this.timeout) : this.timeout,
+        })
+            .then((response) => {
+                if (response.ok) {
+                    done()
+                } else {
+                    const raw = response.text().then((result) => {
+                        debug(result)
+                        let content = undefined
+                        try {
+                            content = JSON.parse(result)
+                        } catch (err) {
+                            content = undefined
+                        }
 
-        axios(req)
-            .then(() => done())
-            .catch((err) => {
-                if (err.response) {
-                    const error = new Error(err.response.statusText)
-                    return done(error)
+                        const error = new Error(response.statusText ?? 'Error')
+                        done(error)
+                    })
                 }
-
+            })
+            .catch((err) => {
+                debug(`2 sending done() with error:`, err)
                 done(err)
             })
+
+        return this
     }
 
     shutdown() {
@@ -335,8 +377,7 @@ class PostHog {
     }
 
     _isErrorRetryable(error) {
-        // Retry Network Errors.
-        if (axiosRetry.isNetworkError(error)) {
+        if (isNetworkError(error)) {
             return true
         }
 
