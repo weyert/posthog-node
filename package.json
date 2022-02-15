@@ -10,7 +10,7 @@
         "url": "https://posthog.com"
     },
     "engines": {
-        "node": ">=12"
+        "node": ">=14"
     },
     "size-limit": [
         {
