@@ -8,12 +8,13 @@ const DEFAULT_TIMEOUT = 0
  * @param fetch the Fetch implementation
  */
 function setup(fetch) {
+    // Check if the automatically back exists, if not fail hard
     if (!fetch) {
-        fetch = require('undici').fetch
+        throw new Error('Missing fetch implementaiton')
     }
 
     function fetchTimeout(url, options) {
-        const requestTimeout = options.timeout ?? 0
+        const requestTimeout = options.timeout || 0
         const shouldTimeout = requestTimeout > 0
 
         return new Promise((resolve, reject) => {

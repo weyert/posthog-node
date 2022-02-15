@@ -356,7 +356,7 @@ class PostHog {
                             content = undefined
                         }
 
-                        const error = new Error(response.statusText ?? 'Error')
+                        const error = new Error(response.statusText || 'Error')
                         done(error)
                     })
                 }

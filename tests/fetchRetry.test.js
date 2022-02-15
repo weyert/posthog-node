@@ -2,7 +2,7 @@ const setup = require('../fetchRetry')
 const { ResponseError } = require('../fetchRetry')
 const { createServer } = require('http')
 const AbortController = require('abort-controller')
-const retryFetch = setup()
+const retryFetch = setup(require('undici').fetch)
 
 describe('fetchRetry', () => {
     it('retries upon 500', async () => {

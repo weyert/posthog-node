@@ -22,8 +22,9 @@ function isClientError(err) {
  * @param fetch the Fetch implementation
  */
 function setup(fetch) {
+    // Check if the automatically back exists, if not fail hard
     if (!fetch) {
-        fetch = require('undici').fetch
+        throw new Error('Missing fetch implementaiton')
     }
 
     async function fetchRetry(url, opts = {}) {

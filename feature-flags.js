@@ -172,7 +172,7 @@ class FeatureFlagsPoller {
 
         const requestHeaders = new Headers(headers)
         requestHeaders.set('Content-Type', 'application/json')
-        requestHeaders.set('Content-Length', Buffer.byteLength(requestBody ?? ''))
+        requestHeaders.set('Content-Length', requestBody ? Buffer.byteLength(requestBody) : 0)
 
         const req = {
             method: method,
