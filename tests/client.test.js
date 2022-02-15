@@ -1,5 +1,4 @@
 const { version } = require('../package')
-const { setTimeout } = require('timers/promises')
 const pify = require('pify')
 const createNetworkMocking = require('./assets/networkMock')
 const delay = require('delay')
@@ -164,7 +163,7 @@ describe('Client', () => {
 
             client.enqueue('type', {})
             jest.advanceTimersByTime(5)
-            expect(client.flush).not.toHaveBeenCalledTimes(1)
+            expect(client.flush).not.toHaveBeenCalled()
             client.enqueue('type', {})
             jest.advanceTimersByTime(5)
 
@@ -177,6 +176,8 @@ describe('Client', () => {
 
             const callback = jest.fn()
             client.enqueue('type', {}, callback)
+            expect(callback).toHaveBeenCalledTimes(0)
+
             await delay(5)
 
             expect(callback).toHaveBeenCalledTimes(1)
