@@ -41,7 +41,6 @@ class FeatureFlagsPoller {
 
     async isFeatureEnabled(key, distinctId, defaultResult = false, groups = {}) {
         await this.loadFeatureFlags()
-        // console.log(`loadedSuccessfullyOnce:`, this.loadedSuccessfullyOnce)
 
         if (!this.loadedSuccessfullyOnce) {
             return defaultResult
@@ -68,11 +67,8 @@ class FeatureFlagsPoller {
                 rolloutPercentage: featureFlag.rollout_percentage,
             })
         } else {
-            // console.log(`isFeatureEnabled() featureFlag:`, featureFlag)
-
             try {
                 const requestBody = { groups, distinct_id: distinctId }
-                // console.log(`isFeatureEnabled() requestBody:`, requestBody)
 
                 const stringifiedRequestBody = JSON.stringify(requestBody)
 
@@ -81,21 +77,16 @@ class FeatureFlagsPoller {
                     method: 'POST',
                     body: requestBody,
                 })
-                // console.log(`isFeatureEnabled() response:`, res)
-                // console.log(`isFeatureEnabled() isResponseOK:`, res.ok, res.status)
 
                 if (res.ok) {
                     const json = await res.json()
-                    // console.log(`isFeatureEnabled() json:`, json)
 
                     isFlagEnabledResponse = json.featureFlags.indexOf(key) >= 0
                 } else {
-                    // console.log(`isFeatureEnabled() failed response`)
 
                     isFlagEnabledResponse = defaultResult
                 }
             } catch (err) {
-                // console.log(`isFeatureEnabled() err:`, err)
 
                 isFlagEnabledResponse = defaultResult
             }
@@ -140,8 +131,6 @@ class FeatureFlagsPoller {
                 throw new Error('Failed to fetch feature flags')
             }
         } catch (err) {
-            // console.log(`Error occurred:`, err)
-
             // if an error that is not an instance of ClientError is thrown
             // we silently ignore the error when reloading feature flags
             if (err instanceof ClientError) {
@@ -154,7 +143,6 @@ class FeatureFlagsPoller {
     // integerRepresentationOfHashSubset / LONG_SCALE for sha1('a.b') should equal 0.4139158829615955
     _isSimpleFlagEnabled({ key, distinctId, rolloutPercentage }) {
         if (!rolloutPercentage) {
-            // console.info(`FeatureFlagPoller._isSimpleFlagEnabled() Missing rolloutPercentage`)
             return true
         }
 
@@ -194,7 +182,6 @@ class FeatureFlagsPoller {
 
         let res
         try {
-            // console.log(`decoratedFetch:`, decoratedFetch)
             res = await decoratedFetch(url, {
                 ...req,
                 retry: {
@@ -205,7 +192,6 @@ class FeatureFlagsPoller {
                 },
                 timeout: typeof this.timeout === 'string' ? ms(this.timeout) : this.timeout,
             })
-            // console.log(`response:`, res)
 
             if (!res.ok) {
                 throw new Error('Failed to fetch request')
