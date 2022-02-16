@@ -1,7 +1,7 @@
 // Type definitions for posthog-node
 // Project: Posthog
 
-declare module 'posthog-node' {
+declare module '@tapico/posthog-node' {
     interface Option {
         flushAt?: number
         flushInterval?: number
