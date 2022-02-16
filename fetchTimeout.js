@@ -20,7 +20,10 @@ function setup(fetch) {
         return new Promise((resolve, reject) => {
             let timeoutId = undefined
             if (shouldTimeout) {
-                setTimeout(() => {
+                timeoutId = setTimeout(() => {
+                    clearTimeout(timeoutId)
+                    timeoutId.unref()
+
                     reject(new TypeError('Network request timeout'))
                 }, requestTimeout)
             }

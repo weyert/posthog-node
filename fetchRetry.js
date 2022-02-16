@@ -64,7 +64,7 @@ function setup(fetch) {
                             if (retryAfter > retryOpts.maxRetryAfter) {
                                 return res
                             } else {
-                                await new Promise((r) => setTimeout(r, retryAfter * 1e3))
+                                await new Promise((r) => setTimeout(r, retryAfter * 1e3)).unref()
                             }
                         }
 
